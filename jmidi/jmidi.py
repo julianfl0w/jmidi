@@ -25,8 +25,16 @@ ch = logging.StreamHandler()
 ch.setFormatter(formatter)
 logger.addHandler(ch)
 
+transpose = -48
+pentatonic = np.array([0, 2, 4, 7, 9])
+pentatonicFull = np.array([])
+for octave in range(int(128 / 5) + 1):
+    thisOct = pentatonic + 12 * octave + transpose
+    pentatonicFull = np.append(pentatonicFull, thisOct)
+print(pentatonicFull)
 
-class Note:
+
+class Voice:
     def __init__(self, index):
         self.index = index
         self.voices = []
@@ -58,34 +66,38 @@ class MidiManager:
         self.lastDevCheck = 0
 
         # self.flushMidi()
-
-        self.allNotes = [Note(index=i) for i in range(polyphony)]
-        self.unheldNotes = self.allNotes.copy()
+        self.POLYPHONY = polyphony
+        self.allVoices = [Voice(index=i) for i in range(polyphony)]
+        self.physicalNoteToVoice = [[]] * 128
+        self.physicalUnheldNotes = list(np.arange(128))
         self.sustain = False
-        self.toRelease = []
+        self.notesToRelease = []
         self.modWheelReal = 0.25
         self.pitchwheelReal = 1
-        self.mostRecentlyStruckNoteIndex = 0
+        self.mostRecentlySpawnedVoice = 0
+        self.deviceWhichRecentlyBent = None
+        self.roundRobinVoice = 0
 
     def spawnVoice(self):
+        # fuck it, round robin
+        toret = self.allVoices[self.roundRobinVoice]
+        self.roundRobinVoice = (self.roundRobinVoice + 1) % self.POLYPHONY
+        return toret
+
         # try to pick an unheld note first
         # the one released the longest ago
-        if len(self.unheldNotes):
+        if len(self.physicalUnheldNotes):
             retval = sorted(
-                self.unheldNotes, key=lambda x: x.strikeTime, reverse=False
+                self.physicalUnheldNotes, key=lambda x: x.strikeTime, reverse=False
             )[0]
-            self.unheldNotes.remove(retval)
+            self.physicalUnheldNotes.remove(retval)
             return retval
         # otherwise, pick the least recently struck
         else:
-            retval = sorted(self.allNotes, key=lambda x: x.strikeTime, reverse=False)[0]
+            retval = sorted(self.allVoices, key=lambda x: x.strikeTime, reverse=False)[
+                0
+            ]
             return retval
-
-    def getNoteFromMidi(self, num):
-        for n in self.allNotes:
-            if n.midiIndex == num:
-                return n
-        return self.allNotes[0]
 
     def checkForNewDevices(self):
         midi_ports = self.midiin.get_ports()
@@ -97,41 +109,47 @@ class MidiManager:
                 except (EOFError, KeyboardInterrupt):
                     sys.exit()
 
-                self.allMidiDevices += [mididev]
+                self.allMidiDevices += [(mididev, midi_portname)]
         self.midi_ports_last = midi_ports
 
-    def processMidi(self, msg):
-        # print(msg)
+    def processMidi(self, devAndMsg):
+        dev, msg = devAndMsg
         if msg.type == "note_off" or (msg.type == "note_on" and msg.velocity == 0):
 
-            note = self.getNoteFromMidi(msg.note)
-            self.unheldNotes += [note]
             if self.sustain:
-                self.toRelease += [note]
+                self.notesToRelease += [msg]
                 return
-            note.velocity = 0
-            note.velocityReal = 0
-            note.midiIndex = -1
-            note.held = False
-            note.releaseTime = time.time()
-            self.synthInterface.noteOff(note)
+            self.physicalUnheldNotes += [msg.note]
+            voices = self.physicalNoteToVoice[msg.note]
+            for voice in voices:
+                voice.velocity = 0
+                voice.velocityReal = 0
+                voice.midiIndex = -1
+                voice.held = False
+                voice.releaseTime = time.time()
+                self.synthInterface.noteOff(voice)
+            self.physicalNoteToVoice[msg.note] = []
 
         elif msg.type == "note_on":
-            note = self.spawnVoice()
-            self.mostRecentlyStruckNoteIndex = note.index
-            note.strikeTime = time.time()
-            note.velocity = msg.velocity
-            note.velocityReal = (msg.velocity / 127.0) ** 2
-            note.held = True
-            note.msg = msg
-            note.midiIndex = msg.note
-            self.synthInterface.noteOn(note)
+            voice = self.spawnVoice()
+            self.physicalNoteToVoice[msg.note] += [voice]
+            self.mostRecentlySpawnedVoice = voice.index
+            voice.strikeTime = time.time()
+            voice.velocity = msg.velocity
+            voice.velocityReal = (msg.velocity / 127.0) ** 2
+            voice.held = True
+            voice.msg = msg
+            # voice.midiIndex = msg.note
+            voice.midiIndex = pentatonicFull[msg.note]
+            self.synthInterface.noteOn(voice)
 
         elif msg.type == "pitchwheel":
             # print("PW: " + str(msg.pitch))
             self.pitchwheel = msg.pitch
-            ARTIPHON = 1
-            if ARTIPHON:
+            if (
+                self.deviceWhichRecentlyBent is not None
+                and "INSTRUMENT1" in self.deviceWhichRecentlyBent
+            ):
                 self.pitchwheel *= 12
             amountchange = self.pitchwheel / 8192.0
             octavecount = 2 / 12
@@ -143,7 +161,7 @@ class MidiManager:
         elif msg.type == "control_change":
 
             event = "control[" + str(msg.control) + "]"
-
+            print(event)
             # print(event)
             # sustain pedal
             if msg.control == 64:
@@ -152,9 +170,10 @@ class MidiManager:
                     self.sustain = True
                 else:
                     self.sustain = False
-                    for note in self.toRelease:
-                        self.synthInterface.noteOff(note)
-                    self.toRelease = []
+                    for note in self.notesToRelease:
+                        self.processMidi((dev, note))
+                        # self.synthInterface.noteOff(voice)
+                    self.notesToRelease = []
 
             # mod wheel
             elif msg.control == 1:
@@ -173,7 +192,7 @@ class MidiManager:
 
         # if msg.type == "note_off" or (msg.type == "note_on" and msg.velocity == 0):
         #    # implement rising mono rate
-        #    for heldnote in self.allNotes[::-1]:
+        #    for heldnote in self.allVoices[::-1]:
         #        if heldnote.held and self.polyphony == self.voicesPerCluster :
         #            self.midi2commands(heldnote.msg)
         #            break
@@ -188,18 +207,18 @@ class MidiManager:
             self.lastDevCheck = time.time()
             self.checkForNewDevices()
 
-        for msg in self.getNewMidi():
-            self.processMidi(msg)
+        for devAndMsg in self.getNewMidi():
+            self.processMidi(devAndMsg)
 
     def getNewMidi(self):
         # c = sys.stdin.read(1)
         # if c == 'd':
         # 	dtfm_inst.dumpState()
-        msgs = []
-        for dev in self.allMidiDevices:
+        devAndMsgs = []
+        for dev, midi_portname in self.allMidiDevices:
             msg = dev.get_message()
             while msg is not None:
                 msg = mido.Message.from_bytes(msg[0])
-                msgs += [msg]
+                devAndMsgs += [(midi_portname, msg)]
                 msg = dev.get_message()
-        return msgs
+        return devAndMsgs
