@@ -25,13 +25,13 @@ ch = logging.StreamHandler()
 ch.setFormatter(formatter)
 logger.addHandler(ch)
 
+# In case you want to translate MIDI into Pentatonic :)
 transpose = -48
 pentatonic = np.array([0, 2, 4, 7, 9])
 pentatonicFull = np.array([])
 for octave in range(int(128 / 5) + 1):
     thisOct = pentatonic + 12 * octave + transpose
     pentatonicFull = np.append(pentatonicFull, thisOct)
-print(pentatonicFull)
 
 
 class Voice:
@@ -39,7 +39,7 @@ class Voice:
         self.index = index
         self.voices = []
         self.velocity = 0
-        self.velocityReal = 0
+        self.strikeVelocityReal = 0
         self.held = False
         self.polytouch = 0
         self.midiIndex = 0
@@ -59,7 +59,7 @@ class MidiManager:
 
         api = rtmidi.API_UNSPECIFIED
         self.midiin = rtmidi.MidiIn(get_api_from_environment(api))
-
+        self.pentatonic = False
         # loop related variables
         self.midi_ports_last = []
         self.allMidiDevices = []
@@ -68,7 +68,7 @@ class MidiManager:
         # self.flushMidi()
         self.POLYPHONY = polyphony
         self.allVoices = [Voice(index=i) for i in range(polyphony)]
-        self.physicalNoteToVoice = [[]] * 128
+        self.physicalNoteToVoice = [ [] for _ in range(128) ] # [[]*128] doesnt work
         self.physicalUnheldNotes = list(np.arange(128))
         self.sustain = False
         self.notesToRelease = []
@@ -77,6 +77,7 @@ class MidiManager:
         self.mostRecentlySpawnedVoice = 0
         self.deviceWhichRecentlyBent = None
         self.roundRobinVoice = 0
+        self.pitchwheelRealLp = 1
 
     def spawnVoice(self):
         # fuck it, round robin
@@ -123,12 +124,12 @@ class MidiManager:
             voices = self.physicalNoteToVoice[msg.note]
             for voice in voices:
                 voice.velocity = 0
-                voice.velocityReal = 0
+                voice.releaseVelocityReal = 0
                 voice.midiIndex = -1
                 voice.held = False
                 voice.releaseTime = time.time()
-                self.synthInterface.noteOff(voice)
-            self.physicalNoteToVoice[msg.note] = []
+                self.synthInterface.voiceOff(voice)
+            self.physicalNoteToVoice[msg.note].clear()
 
         elif msg.type == "note_on":
             voice = self.spawnVoice()
@@ -136,16 +137,19 @@ class MidiManager:
             self.mostRecentlySpawnedVoice = voice.index
             voice.strikeTime = time.time()
             voice.velocity = msg.velocity
-            voice.velocityReal = (msg.velocity / 127.0) ** 2
+            voice.strikeVelocityReal = math.sqrt(msg.velocity / 127.0)
             voice.held = True
             voice.msg = msg
-            # voice.midiIndex = msg.note
-            voice.midiIndex = pentatonicFull[msg.note]
-            self.synthInterface.noteOn(voice)
+            voice.midiIndex = msg.note
+            if self.pentatonic:
+                voice.midiIndex = pentatonicFull[msg.note]
+            self.synthInterface.voiceOn(voice)
 
         elif msg.type == "pitchwheel":
             # print("PW: " + str(msg.pitch))
             self.pitchwheel = msg.pitch
+            self.deviceWhichRecentlyBent = dev
+            #print(dev)
             if (
                 self.deviceWhichRecentlyBent is not None
                 and "INSTRUMENT1" in self.deviceWhichRecentlyBent
@@ -172,7 +176,7 @@ class MidiManager:
                     self.sustain = False
                     for note in self.notesToRelease:
                         self.processMidi((dev, note))
-                        # self.synthInterface.noteOff(voice)
+                        # self.synthInterface.voiceOff(voice)
                     self.notesToRelease = []
 
             # mod wheel
@@ -210,6 +214,15 @@ class MidiManager:
         for devAndMsg in self.getNewMidi():
             self.processMidi(devAndMsg)
 
+        # put an additive lowpass on the pitch bend
+        self.pitchwheelRealLp 
+        maxBend = 0.025
+        if self.pitchwheelRealLp < self.pitchwheelReal:
+            self.pitchwheelRealLp += min(maxBend, self.pitchwheelReal -self.pitchwheelRealLp)
+        elif self.pitchwheelRealLp > self.pitchwheelReal:
+            self.pitchwheelRealLp -= min(maxBend, self.pitchwheelRealLp-self.pitchwheelReal)
+        
+        
     def getNewMidi(self):
         # c = sys.stdin.read(1)
         # if c == 'd':
