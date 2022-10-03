@@ -1,7 +1,6 @@
 import os
 
 import struct
-from bitarray import bitarray
 import logging
 import json
 import sys
