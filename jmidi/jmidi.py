@@ -78,11 +78,21 @@ class MidiManager:
         self.roundRobinVoice = 0
         self.pitchwheelRealLp = 1
 
-    def spawnVoice(self):
+    def spawnVoice(self, msg):
         # fuck it, round robin
-        toret = self.allVoices[self.roundRobinVoice]
+        voice = self.allVoices[self.roundRobinVoice]
         self.roundRobinVoice = (self.roundRobinVoice + 1) % self.POLYPHONY
-        return toret
+        
+        voice.strikeTime = time.time()
+        voice.velocity = msg.velocity
+        voice.strikeVelocityReal = math.sqrt(msg.velocity / 127.0)
+        voice.held = True
+        voice.msg = msg
+        voice.midiIndex = msg.note
+        if self.pentatonic:
+            voice.midiIndex = pentatonicFull[msg.note]
+
+        return voice
 
         # try to pick an unheld note first
         # the one released the longest ago
@@ -131,18 +141,9 @@ class MidiManager:
             self.physicalNoteToVoice[msg.note].clear()
 
         elif msg.type == "note_on":
-            voice = self.spawnVoice()
-            self.physicalNoteToVoice[msg.note] += [voice]
-            self.mostRecentlySpawnedVoice = voice.index
-            voice.strikeTime = time.time()
-            voice.velocity = msg.velocity
-            voice.strikeVelocityReal = math.sqrt(msg.velocity / 127.0)
-            voice.held = True
-            voice.msg = msg
-            voice.midiIndex = msg.note
-            if self.pentatonic:
-                voice.midiIndex = pentatonicFull[msg.note]
-            self.synthInterface.voiceOn(voice)
+            
+            self.synthInterface.noteOn(msg)
+            
 
         elif msg.type == "pitchwheel":
             # print("PW: " + str(msg.pitch))
