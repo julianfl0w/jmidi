@@ -14,6 +14,7 @@ import hjson as json
 import socket
 import traceback
 import pickle
+import random
 
 useMouse = False
 
@@ -32,24 +33,81 @@ for octave in range(int(128 / 5) + 1):
     thisOct = pentatonic + 12 * octave + transpose
     pentatonicFull = np.append(pentatonicFull, thisOct)
 
-
-class Voice:
-    def __init__(self, index):
+class Note:
+    def __init__(self, interface, index):
+        self.interface = interface
         self.index = index
         self.voices = []
         self.velocity = 0
         self.strikeVelocityReal = 0
         self.held = False
         self.polytouch = 0
-        self.midiIndex = 0
         self.msg = None
         self.releaseTime = -index
         self.strikeTime = -index
+        self.offOn = -1
+        
+    def onGroup(self, groupNo):
+        if self.offOn == groupNo:
+            self.off()
+    
+    def on(self, msg):
+        self.strikeTime = time.time()
+        self.velocity = msg.velocity
+        self.strikeVelocityReal = math.sqrt(msg.velocity / 127.0)
+        self.held = True
+        self.msg = msg
+        self.interface.noteOn(self)
+        
+    def off(self, msg):
+        self.velocity = 0
+        self.releaseVelocityReal = 0
+        self.held = False
+        self.releaseTime = time.time()
+        self.interface.noteOff(self)
+            
+    def inRegion(self, region):
+
+        randUnity = random.random()
+        if self.interface.DEBUG:
+            randUnity = 0.5
+        for k, v in region.items(): 
+            if k == "lovel" and self.velocity < eval(region["lovel"]):
+                return False
+            if k == "hivel" and self.velocity > eval(region["hivel"]):
+                return False
+            if k == "lorand" and randUnity < eval(region["lorand"]):
+                return False
+            if k == "hirand" and randUnity > eval(region["hirand"]):
+                return False
+            
+            if "_hicc" in k:
+                ccNum = int(k.split("_hicc")[1])
+                if self.interface.control[ccNum] > int(v):
+                    return False
+                    
+            elif "_locc" in k:
+                ccNum = int(k.split("_locc")[1])
+                if self.interface.control[ccNum] < int(v):
+                    return False
+            # if k.startswith("xfin_hicc"):
+            #    return False
+            # if k.startswith("xfin_locc"):
+            #    return False
+            # if k.startswith("xfout_hicc"):
+            #    return False
+            # if k.startswith("xfout_locc"):
+            #    return False
+        return True
+    
+class Voice:
+    def __init__(self, index):
+        self.index = index
+        self.note = None
 
 
 class MidiManager:
-    def __init__(self, synthInterface, polyphony):
-        self.synthInterface = synthInterface
+    def __init__(self):
         PID = os.getpid()
 
         logger.setLevel(0)
@@ -65,9 +123,9 @@ class MidiManager:
         self.lastDevCheck = 0
 
         # self.flushMidi()
-        self.POLYPHONY = polyphony
-        self.allVoices = [Voice(index=i) for i in range(polyphony)]
-        self.physicalNoteToVoice = [ [] for _ in range(128) ] # [[]*128] doesnt work
+        self.allNotes  = [Note(index=i, interface=self) for i in range(128)]
+        self.allVoices = [Voice(index=i) for i in range(self.POLYPHONY)]
+        self.control   = [0 for i in range(128)]
         self.physicalUnheldNotes = list(np.arange(128))
         self.sustain = False
         self.notesToRelease = []
@@ -78,17 +136,11 @@ class MidiManager:
         self.roundRobinVoice = 0
         self.pitchwheelRealLp = 1
 
-    def spawnVoice(self, msg):
+    def spawnVoice(self):
         # fuck it, round robin
         voice = self.allVoices[self.roundRobinVoice]
         self.roundRobinVoice = (self.roundRobinVoice + 1) % self.POLYPHONY
         
-        voice.strikeTime = time.time()
-        voice.velocity = msg.velocity
-        voice.strikeVelocityReal = math.sqrt(msg.velocity / 127.0)
-        voice.held = True
-        voice.msg = msg
-        voice.midiIndex = msg.note
         if self.pentatonic:
             voice.midiIndex = pentatonicFull[msg.note]
 
@@ -130,19 +182,11 @@ class MidiManager:
                 self.notesToRelease += [msg]
                 return
             self.physicalUnheldNotes += [msg.note]
-            voices = self.physicalNoteToVoice[msg.note]
-            for voice in voices:
-                voice.velocity = 0
-                voice.releaseVelocityReal = 0
-                voice.midiIndex = -1
-                voice.held = False
-                voice.releaseTime = time.time()
-                self.synthInterface.voiceOff(voice)
-            self.physicalNoteToVoice[msg.note].clear()
+            thisNote = self.allNotes[msg.note]
+            thisNote.off(msg)
 
         elif msg.type == "note_on":
-            
-            self.synthInterface.noteOn(msg)
+            self.allNotes[msg.note].on(msg)
             
 
         elif msg.type == "pitchwheel":
@@ -160,12 +204,13 @@ class MidiManager:
             self.pitchwheelReal = pow(2, amountchange * octavecount)
             # print("PWREAL " + str(self.pitchwheelReal))
             # self.setAllIncrements()
-            self.synthInterface.pitchWheel(self.pitchwheelReal)
+            self.pitchWheel(self.pitchwheelReal)
 
         elif msg.type == "control_change":
 
             event = "control[" + str(msg.control) + "]"
             print(event)
+            self.control[msg.control] = msg.value
             # print(event)
             # sustain pedal
             if msg.control == 64:
@@ -176,7 +221,7 @@ class MidiManager:
                     self.sustain = False
                     for note in self.notesToRelease:
                         self.processMidi((dev, note))
-                        # self.synthInterface.voiceOff(voice)
+                        # self.voiceOff(voice)
                     self.notesToRelease = []
 
             # mod wheel
@@ -184,7 +229,7 @@ class MidiManager:
                 valReal = msg.value / 127.0
                 print(valReal)
                 self.modWheelReal = valReal
-                self.synthInterface.modWheel(self.modWheelReal)
+                self.modWheel(self.modWheelReal)
 
         elif msg.type == "polytouch":
             self.polytouch = msg.value
