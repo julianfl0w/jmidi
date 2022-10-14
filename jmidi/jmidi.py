@@ -131,7 +131,8 @@ class MidiManager:
         self.notesToRelease = []
         self.modWheelReal = 0.25
         self.pitchwheelReal = 1
-        self.mostRecentlySpawnedVoice = 0
+        self.mostRecentlySpawnedVoice = self.allNotes[0]
+        self.mostRecentlyStruckNote = 0
         self.deviceWhichRecentlyBent = None
         self.roundRobinVoice = 0
         self.pitchwheelRealLp = 1
@@ -186,6 +187,7 @@ class MidiManager:
             thisNote.off(msg)
 
         elif msg.type == "note_on":
+            self.mostRecentlyStruckNote = self.allNotes[msg.note]
             self.allNotes[msg.note].on(msg)
             
 
