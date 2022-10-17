@@ -131,8 +131,8 @@ class MidiManager:
         self.notesToRelease = []
         self.modWheelReal = 0.25
         self.pitchwheelReal = 1
-        self.mostRecentlySpawnedVoice = self.allNotes[0]
-        self.mostRecentlyStruckNote = 0
+        self.mostRecentlySpawnedVoice = self.allVoices[0]
+        self.mostRecentlyStruckNote = self.allNotes[0]
         self.deviceWhichRecentlyBent = None
         self.roundRobinVoice = 0
         self.pitchwheelRealLp = 1
@@ -140,6 +140,7 @@ class MidiManager:
     def spawnVoice(self):
         # fuck it, round robin
         voice = self.allVoices[self.roundRobinVoice]
+        self.mostRecentlySpawnedVoice = voice
         self.roundRobinVoice = (self.roundRobinVoice + 1) % self.POLYPHONY
         
         if self.pentatonic:
