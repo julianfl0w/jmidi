@@ -190,7 +190,7 @@ class MidiManager:
         elif msg.type == "note_on":
             self.mostRecentlyStruckNote = self.allNotes[msg.note]
             self.allNotes[msg.note].on(msg)
-            
+            return self.allNotes[msg.note]
 
         elif msg.type == "pitchwheel":
             # print("PW: " + str(msg.pitch))
